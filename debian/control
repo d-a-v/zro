@@ -1,0 +1,16 @@
+Source: zro
+Priority: extra
+Maintainer: David Gauchard <david@unixrox.net>
+Build-Depends: debhelper (>= 8.0.0), help2man
+Standards-Version: 3.9.4
+Section: utils
+Homepage: http://github/d-a-v/zro
+Vcs-Git: ssh://git@github.com:d-a-v/zro.git
+Vcs-Browser: https://github.com/d-a-v/zro.git
+
+Package: zro
+Section: utils
+Architecture: all
+Depends: ${misc:Depends}, unionfs-fuse, btrfs-tools, lsof, rsync
+Description: compressed ramfs on rofs with on-demand sync
+	configurable compressed mix of tmpfs and union-fs

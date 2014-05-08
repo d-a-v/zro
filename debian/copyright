@@ -1,0 +1,10 @@
+Format: http://dep.debian.net/deps/dep5
+Upstream-Name: zro
+Source: https://github.com/d-a-v/zro.git
+
+Files: *
+Copyright: 2014 david gauchard
+License: GPL-2
+
+License: GPL-2
+	see /usr/share/common-licenses/GPL-2

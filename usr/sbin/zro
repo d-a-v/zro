@@ -1,0 +1,315 @@
+#!/bin/sh
+
+# License: GPLv2 (see COPYING) or any later version
+# Authors: david gauchard <david@unixrox.net>
+
+name=zro
+tmpfsize=20%
+fstab=/etc/fstab
+nfstab=/tmp/fstab.new
+
+# todo
+# test change [(space)(tab)] with [[:space:]] or [[:blank:]] in greps
+# check lsof and try to perlize / awkize it
+
+
+help ()
+{
+	cat << EOF
+zro v$version
+syntax: zro <options>
+
+purpose:
+	Set root fs in read-only mode and keep selected
+	directories in read-write mode in a compressed ram fs. 
+	Those directories can be on-demand-synchronized to the
+	real fs.
+	While in r/w mode, the 'show-access-w' command
+	helps choosing which directories should be kept r/w.
+	This is designed so far on and for raspbian.
+
+options are:
+`grep -- '-[^ ]*).*#' $0 | sed -e 's,),,1' -e 's,\\\\,,1' -e 's,#,,1' -e 's,\t\t*,\t,g'`
+default name is $name
+default size is $tmpfsize
+EOF
+}
+
+desc ()
+{
+cat << EOF
+zro multicommand script:
+	zro: see below
+	ro [<dir>]		- remount <dir> (default /) as read-only
+	rw [<dir>]		- remount <dir> (default /) as read-write
+	show-access-w [<dir>]	- show opened file in write or append mode
+	mount.ztmpfs		- same as tmpfs with same options +
+				  build a looped btrfs-compressed fs inside
+	mount.unionmkdirrw	- wrapper for unionfs-fuse +
+				  "mkdir -p" of the RW directory
+	apt-get/aptitude [...]	- if needed, remount r/w before and r/o after
+				  executing the real command
+
+EOF
+	help
+}
+
+show_access_w ()
+{
+	# is it portable?
+	# does -Fctanp give always same order
+	# who wants to play with perl instead ?
+	#linux ok, not osx:
+	#lsof -nP -f -Fctanp0 | tr '\0' ' '|egrep '^(p|a[wu] tREG)' |sed -e 's,a. tREG n,,g' -e 's, c\(.\),-\1,g' | tr '\n' ' ' | sed 's,p\([1-9][0-9]*-[^ ]*\),\n\1,g'|grep  '  .'|sort -u
+	# linux, osx ok:
+	lsof -nP -f -Fctanp0 | tr '\0' ' '|egrep '^(p|a[wu] tREG)' |sed -e 's,a. tREG n,,g' -e 's, c\(.\),-\1,g' | tr '\n' '#' | sed 's,#p\([1-9][0-9]*-[^#]*\),\
+\1,g'|grep  ' #'|sed 's,#,,g'|sort -u | grep " $1"
+}
+
+ro ()
+{
+	d="$1"
+	test -z "$d" && d=/
+	echo "Remounting '$d' read-only"
+	mount -o remount,ro "$d" && return 0
+	show_access_w $d
+	false
+}
+
+rw ()
+{
+	d="$1"
+	test -z "$d" && d=/
+	echo "Remounting '$d' read-write"
+	mount -o remount,rw "$d"
+}
+
+sync ()
+{
+	if grep "^unionfs-fuse.*[	]$1[	]*unionmkdirrw" $fstab > /dev/null; then
+		if umount "$1"; then
+			if ! rsync -a --remove-source-files "$tmpfs/z$1/" "$1"; then
+				echo 'is / rw-mounted ?'
+				ret=1
+			fi
+			mount "$1"
+		else
+			echo "cannot umount '$1', it may be used by:"
+			show_access_w | grep "$1"
+			ret=1
+			false
+		fi
+	else
+		echo "is '$1' really '$name' ?"
+		ret=1
+		false
+	fi
+}
+
+update_fstab ()
+{
+	date=`date '+%Y%m%d-%H%M%S'`
+	echo "------------------------------- diff -c"
+	diff -c $fstab $nfstab || true
+	echo "---------------------------------------"
+	echo 'do you agree (y/N)?'
+	read ans
+	test "$ans" = y || exit 1
+	cp $fstab $fstab.$date
+	echo "$fstab.$date created as a backup"
+	mv $nfstab $fstab
+	echo "$fstab updated"
+}
+
+rorw_apt ()
+{
+	if test "$1" = ro; then
+	(
+		cat << EOF 
+DPkg::Pre-Invoke  { rw; };
+DPkg::Post-Invoke { ro; };
+EOF
+	)	> /etc/apt/apt.conf.d/zro
+	else
+		rm -f /etc/apt/apt.conf.d/zro
+	fi
+}
+
+rorw_slash ()
+{
+	# "$1" is ro or rw
+	opts=`grep -E '^[^ 	]+[ 	]+/[ 	]+[^ 	]+[ 	]+[^ 	]+.*$' $fstab | sed -r 's;^[^ 	]+[ 	]+/[ 	]+[^ 	]+[ 	]+([^ 	]+).*$;,\1,;g'`
+	opts=`echo "$opts" | sed 's;,r[ow];;g'`
+	opts="$opts$1"
+	opts=`echo "$opts" | cut -c2-`
+
+	sed -r "s;(^[^ 	]+[ 	]+/[ 	]+[^ 	]+[ 	]+)[^ 	]+(.*)$;\1$opts\2;g" $fstab > $nfstab
+
+	update_fstab
+	
+	#rorw_apt "$1"
+}
+
+mount_unionmkdirrw ()
+{
+	# 'mkdir -p' of the RW directory of union-fs
+
+	fuse="$1"
+	dest="$2"
+	shift 2
+	mkdir -p `echo "$fuse" | sed 's,.*[#:]\([^=]*\)=RW.*,\1,g'`
+	mount "$fuse" "$dest" -t fuse "$@"
+}
+
+mount_ztmpfs ()
+{
+	shift			# skip useless first arg "none"
+	tmpfs="$1"		# mount point
+	shift
+	opts="$@"		# options
+	btrfs="$tmpfs/btrfs"	# btrfs file
+
+	mount -t tmpfs none "$tmpfs" $opts
+	dd if=/dev/zero of="$btrfs" || true
+	mkfs.btrfs "$btrfs"
+	mount -o loop,compress-force=zlib,nobarrier,nodatacow,nodatasum,notreelog,ssd -t btrfs "$btrfs" "$tmpfs"
+}
+
+is_rw ()
+{
+	test -w /
+}
+
+apt ()
+{
+	remount_ro=false
+	if ! is_rw; then
+		rw
+		remount_ro=:
+	fi
+	cmd="$1"
+	shift
+	/usr/bin/$cmd "$@"
+	$remount_ro && ro
+}
+
+version=20140429.0099
+
+set -e # globally rely on this
+
+case "$1" in
+	-h|--help)
+		desc
+		exit 0;;
+esac
+
+base=`basename "$0"`
+case "$base" in
+	ro) ro "$@"; exit $?;;
+	rw) rw "$@"; exit $?;;
+	show-access-w) show_access_w "$@"; exit $?;;
+	mount.unionmkdirrw) mount_unionmkdirrw "$@"; exit $?;;
+	mount.ztmpfs) mount_ztmpfs "$@"; exit $?;;
+	apt-get|aptitude) apt "$base" "$@"; exit $?;;
+	zro) ;;
+	*) echo "zro: unrecognized '$base' invocation"; help; exit 1;;
+esac
+
+test -z "$1" && { help; exit 1; }
+
+sync=false
+tmpfs=/var/$name
+update=false
+syncall=false
+ret=0
+
+# $add is already added entries
+add=`egrep "^unionfs-fuse.*[ 	].*[ 	]*unionmkdirrw" $fstab|awk '{print $2;}'`
+add=`echo $add` # no CRLF
+
+while ! test -z "$1"; do
+	case $1 in
+
+		-n|--name)			# <name> - (use /var/<name> instead of /var/zro)
+			name="$2"
+			tmpfs=/var/$name
+			shift;;
+
+		-a|--add)			# <dir> - add dir in the zramfs pool
+			add="$add $2"
+			update=:
+			shift;;
+
+		-r|--remove)			# <dir> - remove dir from the pool
+			# space is importand
+			add=`echo " $add" | sed -r "s, $2,,g"`
+			update=:
+			shift;;
+			
+		-s|--size)			# <size(k|m|%)> - tmpfs size
+			tmpfsize="$2"
+			shift;;
+
+		-S|--sync)			# <dir> - rsync files from ram to real fs (and flush ram)
+			test -z "$2" && { help; exit 1; }
+			sync "$2"
+			shift;;
+		
+		-A|--syncall)			# - sync all files in ram to real fs
+			syncall=:;;
+		
+		-W|--rw) 			# - set / as rw in fstab
+			rorw_slash rw;;
+			
+		-O|--ro) 			# - set / as ro in fstab
+			rorw_slash ro;;
+		
+		-h|--help)			# - help and wrappers description
+			false;;			# (never reached)
+
+		-v|--version)			# - show version
+			echo $version
+			exit 0;;
+		
+		*)
+			echo "unrecognized option '$1'"
+			help
+			exit 1;;
+	esac
+	shift
+done
+
+if $syncall; then
+	for d in `grep "^unionfs-fuse.*[ 	].*[ 	]*unionmkdirrw" $fstab | awk '{ print $2; }'`; do
+		echo "--- syncing '$d'"
+		sync "$d" && echo "... done" || true # keep going
+	done
+	exit $ret
+fi
+
+$update || exit $ret
+
+{
+	# clean fstab from all our noise
+	egrep -v "^# $name entries|$tmpfs/z[ 	]*ztmpfs|$tmpfs/bind[ 	]*none[ 	]*bind|^unionfs-fuse.*[ 	].*[ 	]*unionmkdirrw" $fstab
+	
+	# start delimiter
+	echo "# $name entries"
+	
+	# ztmpfs entry (see /sbin/mount.ztmpfs)
+	echo "none		$tmpfs/z	ztmpfs	size=$tmpfsize"
+	
+	# bind entry
+	echo "/		$tmpfs/bind	none 	bind"
+	# and its matching dir
+	mkdir -p $tmpfs/bind $tmpfs/z
+	
+	# rebuild zro entries in fstab
+	for d in $add; do
+		echo "unionfs-fuse#$tmpfs/z$d=RW:$tmpfs/bind$d=RO	$d	unionmkdirrw	cow,allow_other,nonempty"
+	done
+	
+	echo "# $name entries end"
+} > $nfstab
+
+update_fstab
