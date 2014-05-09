@@ -19,19 +19,24 @@ help ()
 zro v$version
 syntax: zro <options>
 
-purpose:
-	Set root fs in read-only mode and keep selected
-	directories in read-write mode in a compressed ram fs. 
-	Those directories can be on-demand-synchronized to the
-	real fs.
-	While in r/w mode, the 'show-access-w' command
-	helps choosing which directories should be kept r/w.
-	This is designed so far on and for raspbian.
-
-options are:
+zro options:
 `grep -- '-[^ ]*).*#' $0 | sed -e 's,),,1' -e 's,\\\\,,1' -e 's,#,,1' -e 's,\t\t*,\t,g'`
 default name is $name
 default size is $tmpfsize
+
+purpose:
+	Set root fs in read-only (-O) mode and keep selected
+	directories in read-write (-a) mode in a compressed ram
+	fs.
+	
+	Those directories can be on-demand-synchronized (-S,
+	-A) to the real fs.
+	
+	While in r/w mode, the 'show-access-w' command
+	helps choosing which directories should be kept r/w.
+
+	This is so far designed on and for raspbian.
+
 EOF
 }
 
@@ -39,16 +44,13 @@ desc ()
 {
 cat << EOF
 zro multicommand script:
-	zro: see below
+	zro <options>		- manage fstab, see zro options
 	ro [<dir>]		- remount <dir> (default /) as read-only
 	rw [<dir>]		- remount <dir> (default /) as read-write
 	show-access-w [<dir>]	- show opened file in write or append mode
-	mount.ztmpfs		- same as tmpfs with same options +
-				  build a looped btrfs-compressed fs inside
-	mount.unionmkdirrw	- wrapper for unionfs-fuse +
-				  "mkdir -p" of the RW directory
-	apt-get/aptitude [...]	- if needed, remount r/w before and r/o after
-				  executing the real command
+	mount.ztmpfs		- same as tmpfs with same options + build a looped btrfs-compressed fs inside
+	mount.unionmkdirrw	- wrapper for unionfs-fuse + "mkdir -p" of the RW directory
+	apt-get/aptitude [...]	- if needed, remount r/w before and r/o after executing the real command
 
 EOF
 	help
@@ -119,6 +121,7 @@ update_fstab ()
 	echo "$fstab.$date created as a backup"
 	mv $nfstab $fstab
 	echo "$fstab updated"
+	echo "(directories '$tmpfs/z' and '$tmpfs/bind' should be mounted before any other zro entries)"
 }
 
 rorw_apt ()
@@ -138,15 +141,19 @@ EOF
 rorw_slash ()
 {
 	# "$1" is ro or rw
-	opts=`grep -E '^[^ 	]+[ 	]+/[ 	]+[^ 	]+[ 	]+[^ 	]+.*$' $fstab | sed -r 's;^[^ 	]+[ 	]+/[ 	]+[^ 	]+[ 	]+([^ 	]+).*$;,\1,;g'`
-	opts=`echo "$opts" | sed 's;,r[ow];;g'`
-	opts="$opts$1"
-	opts=`echo "$opts" | cut -c2-`
 
-	sed -r "s;(^[^ 	]+[ 	]+/[ 	]+[^ 	]+[ 	]+)[^ 	]+(.*)$;\1$opts\2;g" $fstab > $nfstab
+	# get / mount options (add commas)
+	opts=`< $fstab grep -E '^[^ 	#]+[ 	]+/[ 	]+[^ 	]+[ 	]+[^ 	]+.*$' | sed -r 's;^[^ 	]+[ 	]+/[ 	]+[^ 	]+[ 	]+([^ 	]+).*$;,\1,;g'`
+	# remove any ro or rw
+	opts=`echo "$opts" | sed 's;,r[ow],;,;g'`
+	# remove first comma and add our ro/rw option
+	opts="${opts#,}$1"
+	# replace options in fstab
+	sed -r "s;(^[^ 	#]+[ 	]+/[ 	]+[^ 	]+[ 	]+)[^ 	]+(.*)$;\1$opts\2;g" $fstab > $nfstab
 
 	update_fstab
 	
+	# add apt's automatic remounts (does not work well)
 	#rorw_apt "$1"
 }
 
@@ -165,11 +172,9 @@ mount_ztmpfs ()
 {
 	shift			# skip useless first arg "none"
 	tmpfs="$1"		# mount point
-	shift
-	opts="$@"		# options
+	shift			# skip mount points, $@ are options
+	mount -t tmpfs none "$tmpfs" "$@"
 	btrfs="$tmpfs/btrfs"	# btrfs file
-
-	mount -t tmpfs none "$tmpfs" $opts
 	dd if=/dev/zero of="$btrfs" || true
 	mkfs.btrfs "$btrfs"
 	mount -o loop,compress-force=zlib,nobarrier,nodatacow,nodatasum,notreelog,ssd -t btrfs "$btrfs" "$tmpfs"
@@ -193,7 +198,14 @@ apt ()
 	$remount_ro && ro
 }
 
-version=20140429.0099
+getcurrententries()
+{
+	# $add is already-added entries
+	add=`egrep "^unionfs-fuse.*[ 	].*[ 	]*unionmkdirrw" $fstab | awk '{print $2;}'`
+	add=`echo $add` # no CRLF
+}
+
+version=20140509.0100
 
 set -e # globally rely on this
 
@@ -223,14 +235,12 @@ update=false
 syncall=false
 ret=0
 
-# $add is already added entries
-add=`egrep "^unionfs-fuse.*[ 	].*[ 	]*unionmkdirrw" $fstab|awk '{print $2;}'`
-add=`echo $add` # no CRLF
+getcurrententries # fill $add
 
 while ! test -z "$1"; do
 	case $1 in
 
-		-n|--name)			# <name> - (use /var/<name> instead of /var/zro)
+		-n|--name)			# <name> - (for use of /var/<name> instead of /var/zro)
 			name="$2"
 			tmpfs=/var/$name
 			shift;;
@@ -265,11 +275,16 @@ while ! test -z "$1"; do
 			rorw_slash ro;;
 		
 		-h|--help)			# - help and wrappers description
-			false;;			# (never reached)
+			desc;
+			exit 0;;
 
 		-v|--version)			# - show version
 			echo $version
 			exit 0;;
+		
+		#debug
+		-man) help2man -s 8 -N $0 | man -l -; exit 0;;
+		-fstab) fstab="$2"; shift; getcurrententries;;
 		
 		*)
 			echo "unrecognized option '$1'"
