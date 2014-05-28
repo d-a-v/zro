@@ -1,14 +1,12 @@
 usr/sbin/zro
 usr/sbin/ro
 usr/sbin/rw
-usr/sbin/show-access-w
 usr/sbin/apt-get
 usr/sbin/aptitude
-sbin/mount.ztmpfs
-sbin/mount.unionmkdirrw
+sbin/mount.zro
+sbin/mount.fuse.zro
 debian/zro.8 /usr/share/man/man8
 debian/ro.8 /usr/share/man/man8
 debian/rw.8 /usr/share/man/man8
-debian/show-access-w.8 /usr/share/man/man8
-debian/mount.ztmpfs.8 /usr/share/man/man8
-debian/mount.unionmkdirrw.8 /usr/share/man/man8
+debian/mount.zro.8 /usr/share/man/man8
+debian/umount.fuse.zro.8 /usr/share/man/man8

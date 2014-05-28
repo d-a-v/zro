@@ -4,38 +4,39 @@
 # Authors: david gauchard <david@unixrox.net>
 
 name=zro
-tmpfsize=20%
+tmpfs=/run/$name	# can be already be a tmpfs
+tmpfsize=20%		# tmpfs option
+fill=80%		# % of tmpfs free space
 fstab=/etc/fstab
 nfstab=/tmp/fstab.new
 
 # todo
+# check empty z dir on umount after rsync
+# --stop too verbose in case of problem
+# what to do on busy umount: sync or not ?
 # test change [(space)(tab)] with [[:space:]] or [[:blank:]] in greps
-# check lsof and try to perlize / awkize it
-
+# check show_access_w and try to perlize / awkize it
 
 help ()
 {
 	cat << EOF
-zro v$version
-syntax: zro <options>
 
-zro options:
-`grep -- '-[^ ]*).*#' $0 | sed -e 's,),,1' -e 's,\\\\,,1' -e 's,#,,1' -e 's,\t\t*,\t,g'`
-default name is $name
-default size is $tmpfsize
+Options:
+`grep -- '^[^#]*-[^ ]*).*#' $0 | sed -e 's,),,1' -e 's,\\\\,,1' -e 's,#,,1' -e 's,\t\t*,\t,g'`
+default tmpfs location is $tmpfs (if not specified as first arg in mount entry)
 
-purpose:
+Purpose:
 	Set root fs in read-only (-O) mode and keep selected
 	directories in read-write (-a) mode in a compressed ram
-	fs.
+	fs (combining tmpfs, btrfs and unionfs-fuse).
 	
-	Those directories can be on-demand-synchronized (-S,
-	-A) to the real fs.
+	Those ram directories can be on-demand flushed (-S,
+	-A and umount) to the real fs.
 	
-	While in r/w mode, the 'show-access-w' command
+	While in r/w mode, the '--access-w' option
 	helps choosing which directories should be kept r/w.
 
-	This is so far designed on and for raspbian.
+	This is so far designed on and for debian derivatives.
 
 EOF
 }
@@ -44,16 +45,42 @@ desc ()
 {
 cat << EOF
 zro multicommand script:
-	zro <options>		- manage fstab, see zro options
-	ro [<dir>]		- remount <dir> (default /) as read-only
-	rw [<dir>]		- remount <dir> (default /) as read-write
-	show-access-w [<dir>]	- show opened file in write or append mode
-	mount.ztmpfs		- same as tmpfs with same options + build a looped btrfs-compressed fs inside
-	mount.unionmkdirrw	- wrapper for unionfs-fuse + "mkdir -p" of the RW directory
-	apt-get/aptitude [...]	- if needed, remount r/w before and r/o after executing the real command
+	zro <options>		manage fstab, see Options below
+	ro [<dir>]		remount <dir> (default /) as read-only
+	rw [<dir>]		remount <dir> (default /) as read-write
+	apt-get/aptitude [...]	if needed, remount r/w before and r/o after executing the real command
+	umount.fuse.zro		called by umount: sync modified files then revert to original directory
+	mount.zro		called by mount, mount options:
+	.	.	.	size=<tmpfs-size> default:$tmpfsize (see size option from tmpfs)
+	.	.	.	fill=<fill[%]> default:$fill - filesystem size(%) created in the tmpfs
+	.	.	.	umask=<umask> - default:022 (use 000 for '/tmp'-like directories)
 
 EOF
 	help
+}
+
+is_rw ()
+{
+	d="$1"
+	test -z "$d" && d=/
+	test -w "$d"
+}
+
+is_empty ()
+{
+	dir="$1"
+	files=$(echo "$dir"/.* "$dir"/*)
+	test "$files" = "$dir/. $dir/.. $dir/*"
+}
+
+is_mounted ()
+{
+	< /proc/mounts awk '{print $2;}' | grep "^$1\$" > /dev/null
+}
+
+fstype ()
+{
+	stat -f -c '%T' "$1"
 }
 
 show_access_w ()
@@ -72,39 +99,68 @@ ro ()
 {
 	d="$1"
 	test -z "$d" && d=/
-	echo "Remounting '$d' read-only"
-	mount -o remount,ro "$d" && return 0
-	show_access_w $d
-	false
+	if is_rw "$d"; then
+		echo "Remounting '$d' read-only"
+		if ! mount -o remount,ro "$d"; then
+			lsof "$d"
+			false
+		fi
+	fi
 }
 
 rw ()
 {
 	d="$1"
 	test -z "$d" && d=/
-	echo "Remounting '$d' read-write"
-	mount -o remount,rw "$d"
+	if ! is_rw "$d"; then
+		echo "Remounting '$d' read-write"
+		mount -o remount,rw "$d"
+	fi
+}
+
+show_zros ()
+{
+	sed -nr 's,^[^ 	#]+[ 	]+([^ 	]+)[ 	]+zro.*$,\1,pg' < $fstab
+}
+
+log1 ()
+{
+	if $verbose; then
+		cat
+	else
+		cat > /dev/null
+	fi
 }
 
 sync ()
 {
-	if grep "^unionfs-fuse.*[	]$1[	]*unionmkdirrw" $fstab > /dev/null; then
-		if umount "$1"; then
-			if ! rsync -a --remove-source-files "$tmpfs/z$1/" "$1"; then
-				echo 'is / rw-mounted ?'
+	mounted=false
+	is_mounted "$1" && mounted=:
+
+	zro=$(sed -nr "s,^([^ 	#]+)[ 	]+$1[ 	]+zro.*$,\1,pg" < $fstab)
+	if test -z "$zro"; then
+		echo "$zro sync: is '$1' really $name-mounted ?" 1>&2
+		ret=1
+	else
+		# if first char of $zro is not /, then set $zro to default
+		test ${zro%${zro#?*}} = / || zro=$tmpfs
+
+		if ! $mounted || umount -i "$1" 2>&1; then
+			echo "$name: syncing '$1'" 1>&2
+			if ! rsync -a --remove-source-files "$zro/t/z$1/" "$zro/t/b$1"; then
+				echo 'is / rw-mounted ?' 1>&2
 				ret=1
 			fi
-			mount "$1"
+			if ! is_empty "$zro/t/z$1/"; then
+				echo "could not synchronize '$zro/t/z$1/' to '$zro/t/b$1'" 1>&2
+				ret=1
+			fi
+			$mounted && mount "$1" || true
 		else
-			echo "cannot umount '$1', it may be used by:"
-			show_access_w | grep "$1"
+			echo "cannot umount '$1', it may be used by:" 1>&2
+			lsof "$1" | grep "$1" 1>&2 || true
 			ret=1
-			false
 		fi
-	else
-		echo "is '$1' really '$name' ?"
-		ret=1
-		false
 	fi
 }
 
@@ -112,16 +168,20 @@ update_fstab ()
 {
 	date=`date '+%Y%m%d-%H%M%S'`
 	echo "------------------------------- diff -c"
-	diff -c $fstab $nfstab || true
+	same=false
+	diff -c $fstab $nfstab && same=: || true
 	echo "---------------------------------------"
-	echo 'do you agree (y/N)?'
-	read ans
-	test "$ans" = y || exit 1
-	cp $fstab $fstab.$date
-	echo "$fstab.$date created as a backup"
-	mv $nfstab $fstab
-	echo "$fstab updated"
-	echo "(directories '$tmpfs/z' and '$tmpfs/bind' should be mounted before any other zro entries)"
+	if $same; then
+		echo "no fstab change"
+	else
+		echo 'do you agree (y/N)?'
+		read ans
+		test "$ans" = y || exit 1
+		cp $fstab $fstab.$date
+		echo "$fstab.$date created as a backup"
+		mv $nfstab $fstab
+		echo "$fstab updated"
+	fi
 }
 
 rorw_apt ()
@@ -143,47 +203,102 @@ rorw_slash ()
 	# "$1" is ro or rw
 
 	# get / mount options (add commas)
-	opts=`< $fstab grep -E '^[^ 	#]+[ 	]+/[ 	]+[^ 	]+[ 	]+[^ 	]+.*$' | sed -r 's;^[^ 	]+[ 	]+/[ 	]+[^ 	]+[ 	]+([^ 	]+).*$;,\1,;g'`
-	# remove any ro or rw
-	opts=`echo "$opts" | sed 's;,r[ow],;,;g'`
+	#opts=`< $fstab grep -E '^[^ 	#]+[ 	]+/[ 	]+[^ 	]+[ 	]+[^ 	]+.*$' | sed -r 's;^[^ 	]+[ 	]+/[ 	]+[^ 	]+[ 	]+([^ 	]+).*$;,\1,;g'`
+	opts=$(sed -nr 's;^[^ 	#]+[ 	]+/[ 	]+[^ 	]+[ 	]+([^ 	]+).*$;,\1,;pg' < $fstab)
+
+	# remove ro or rw
+	#opts=`echo "$opts" | sed 's;,r[ow],;,;g'`
+	beg=${opts%,r[ow],*}
+	end=${opts#*,r[ow],}
+	test "$beg" = "$end" || opts=$beg,$end
+
 	# remove first comma and add our ro/rw option
 	opts="${opts#,}$1"
+
 	# replace options in fstab
 	sed -r "s;(^[^ 	#]+[ 	]+/[ 	]+[^ 	]+[ 	]+)[^ 	]+(.*)$;\1$opts\2;g" $fstab > $nfstab
-
 	update_fstab
 	
 	# add apt's automatic remounts (does not work well)
 	#rorw_apt "$1"
 }
 
-mount_unionmkdirrw ()
+mount_zro ()
 {
-	# 'mkdir -p' of the RW directory of union-fs
+	zro=$1		# ex: "none" or "/run/zro"
+	dest=$2		# ex: "/var/log"
+	opts=,$4,	# ex: ",fill=80%,size=20%,"
 
-	fuse="$1"
-	dest="$2"
-	shift 2
-	mkdir -p `echo "$fuse" | sed 's,.*[#:]\([^=]*\)=RW.*,\1,g'`
-	mount "$fuse" "$dest" -t fuse "$@"
+	test -z "$zro" -o -z "$dest" && { echo "syntax: $0 <some-empty-or-to-be-created-dir> <existing-dir-to-cache> [rw|,size=<tmpfssize>|,fill=<%>]" 1>&2; exit 1; }
+
+	# if first char of $zro is not /, then set $zro to default
+	test ${zro%${zro#?*}} = / || zro=$tmpfs
+
+	# create dir in (if not present, create btrfs on (if not present, create tmpfs on $zro/z)
+	# create dir and bind mount dest on $zro/bind
+	# union FS both on $dest
+
+	[ $(fstype $dest) = fuseblk ] && { echo "$0: $dest already $name-mounted?" 1>&2; exit 1; }
+
+	# parse options
+	bad=false
+	umask=022
+	for o in `echo $opts | tr , ' '`; do
+		case "$o" in
+		size=*)	tmpfsize=${o#size=};;
+		fill=*) fill=${o#fill=}; fill=${fill%\%};;
+		umask=*) umask=${o#umask=};;
+		v|verb*) verbose=:;;
+		noauto|rw) ;;
+		ro) echo "$0 with option $o - are you kidding?" 1>&2;;
+		noexec|nosuid|nodev|user) echo "$0: option $o not supported" 1>&2; bad=:;;
+		*) echo "$0: unknown option $o" 1>&2; bad=:;;
+		esac
+	done
+	$bad && exit 1
+	tmpfsopts="size=$tmpfsize"
+
+	mkdir -p $zro/t
+	if [ $(fstype $zro/t) != tmpfs ]; then
+		# create tmpfs in $zro/t
+		mount -t tmpfs -o $tmpfsopts none "$zro/t"
+	fi
+	
+	mkdir -p $zro/t/z
+	if [ $(fstype $zro/t/z) != btrfs ]; then
+		# create a btrfs fs for $zro/t/z
+		btrfs=$zro/t/btrfs	# btrfs file
+		availtmpfsk=$(($(df -P -k $zro/t | tail -1 | awk '{print $4;}') * $fill / 100))
+		dd if=/dev/zero of="$btrfs" bs=1024 count=$availtmpfsk 2>&1 | log1
+		mkfs.btrfs "$btrfs" | log1
+		mount -o loop,compress-force=zlib,nobarrier,nodatacow,nodatasum,notreelog,ssd -t btrfs "$btrfs" "$zro/t/z"
+	fi
+	
+	mkdir -p $zro/t/z/$dest
+	if [ ! -r $zro/t/b/$dest ]; then
+		mkdir -p $zro/t/b
+		mount -t none -o bind / $zro/t/b
+	fi
+	
+	unionfs-fuse -o cow,allow_other,nonempty,statfs_omit_ro,fsname=$name,subtype=$name,umask=$umask $zro/t/b/$dest=RO:$zro/t/z/$dest=RW $dest
 }
 
-mount_ztmpfs ()
+umount_zro ()
 {
-	shift			# skip useless first arg "none"
-	tmpfs="$1"		# mount point
-	shift			# skip mount points, $@ are options
-	mount -t tmpfs none "$tmpfs" "$@"
-	btrfs="$tmpfs/btrfs"	# btrfs file
-	dd if=/dev/zero of="$btrfs" || true
-	mkfs.btrfs "$btrfs"
-	mount -o loop,compress-force=zlib,nobarrier,nodatacow,nodatasum,notreelog,ssd -t btrfs "$btrfs" "$tmpfs"
+	u="$1"
+	test ! -z "$u" -a -d "$u" || { echo "$0: need zro directory to unmount" 1>&2; exit 1; }
+
+	is_mounted "$u" || return 1
+	
+	# check fstab too
+	if [ -d $tmpfs/t/z$u -a -d $tmpfs/t/b$u ]; then
+		rw
+		sync "$u"
+	fi
+
+	umount -i $u
 }
 
-is_rw ()
-{
-	test -w /
-}
 
 apt ()
 {
@@ -198,14 +313,15 @@ apt ()
 	$remount_ro && ro
 }
 
-getcurrententries()
+rm_dir ()
 {
-	# $add is already-added entries
-	add=`egrep "^unionfs-fuse.*[ 	].*[ 	]*unionmkdirrw" $fstab | awk '{print $2;}'`
-	add=`echo $add` # no CRLF
+	for d in "$@"; do
+		test -d "$d" && rmdir "$d"
+	done
 }
 
-version=20140509.0100
+version=20140519.0109
+verbose=false
 
 set -e # globally rely on this
 
@@ -215,13 +331,13 @@ case "$1" in
 		exit 0;;
 esac
 
-base=`basename "$0"`
+#base=`basename "$0"`
+base=${0##*/}
 case "$base" in
 	ro) ro "$@"; exit $?;;
 	rw) rw "$@"; exit $?;;
-	show-access-w) show_access_w "$@"; exit $?;;
-	mount.unionmkdirrw) mount_unionmkdirrw "$@"; exit $?;;
-	mount.ztmpfs) mount_ztmpfs "$@"; exit $?;;
+	mount.zro) mount_zro "$@"; exit $?;;
+	umount.fuse.zro) umount_zro "$@"; exit $?;;
 	apt-get|aptitude) apt "$base" "$@"; exit $?;;
 	zro) ;;
 	*) echo "zro: unrecognized '$base' invocation"; help; exit 1;;
@@ -230,37 +346,22 @@ esac
 test -z "$1" && { help; exit 1; }
 
 sync=false
-tmpfs=/var/$name
-update=false
 syncall=false
+stop=false
 ret=0
-
-getcurrententries # fill $add
 
 while ! test -z "$1"; do
 	case $1 in
 
-		-n|--name)			# <name> - (for use of /var/<name> instead of /var/zro)
-			name="$2"
-			tmpfs=/var/$name
-			shift;;
-
-		-a|--add)			# <dir> - add dir in the zramfs pool
+		-a|--add)			# <dir> - add dir as zro in fstab
 			add="$add $2"
-			update=:
 			shift;;
 
-		-r|--remove)			# <dir> - remove dir from the pool
-			# space is importand
-			add=`echo " $add" | sed -r "s, $2,,g"`
-			update=:
+		-r|--remove)			# <dir(regexp)> - remove zro dirs from fstab (.* = all)
+			remove="$remove|$2"
 			shift;;
 			
-		-s|--size)			# <size(k|m|%)> - tmpfs size
-			tmpfsize="$2"
-			shift;;
-
-		-S|--sync)			# <dir> - rsync files from ram to real fs (and flush ram)
+		-S|--sync)			# <dir> - rsync files to real fs (and flush tmpfs)
 			test -z "$2" && { help; exit 1; }
 			sync "$2"
 			shift;;
@@ -274,11 +375,21 @@ while ! test -z "$1"; do
 		-O|--ro) 			# - set / as ro in fstab
 			rorw_slash ro;;
 		
+		-X|--stop)			# - stop and umount everything
+			stop=:;;
+		
+		--access-w)			# [<dir>] - show files opened in write or append mode
+			show_access_w "$2"
+			shift;;
+		
 		-h|--help)			# - help and wrappers description
 			desc;
 			exit 0;;
+		
+		-v|--verbose)
+			verbose=:;;
 
-		-v|--version)			# - show version
+		-V|--version)			# - show version
 			echo $version
 			exit 0;;
 		
@@ -294,37 +405,36 @@ while ! test -z "$1"; do
 	shift
 done
 
+if test ! -z "$remove" -o ! -z "$add"; then
+	if test ! -z "$remove"; then
+		grep -Ev "^[^ 	#]+[ 	]+(${remove#|})[ 	]+zro.*$" < $fstab > $nfstab
+	else
+		cp $fstab $nfstab
+	fi
+	if test ! -z "$add"; then
+		for a in $add; do 
+			echo "none		$a	zro		defaults,umask=022	0	0"
+		done >> $nfstab
+	fi
+	update_fstab
+fi
+
 if $syncall; then
-	for d in `grep "^unionfs-fuse.*[ 	].*[ 	]*unionmkdirrw" $fstab | awk '{ print $2; }'`; do
-		echo "--- syncing '$d'"
-		sync "$d" && echo "... done" || true # keep going
+	for d in $(show_zros); do
+		echo "---> syncing '$d'"
+		sync "$d" && echo "---< syncing '$d' done" || true # keep going
 	done
 	exit $ret
 fi
 
-$update || exit $ret
-
-{
-	# clean fstab from all our noise
-	egrep -v "^# $name entries|$tmpfs/z[ 	]*ztmpfs|$tmpfs/bind[ 	]*none[ 	]*bind|^unionfs-fuse.*[ 	].*[ 	]*unionmkdirrw" $fstab
-	
-	# start delimiter
-	echo "# $name entries"
-	
-	# ztmpfs entry (see /sbin/mount.ztmpfs)
-	echo "none		$tmpfs/z	ztmpfs	size=$tmpfsize"
-	
-	# bind entry
-	echo "/		$tmpfs/bind	none 	bind"
-	# and its matching dir
-	mkdir -p $tmpfs/bind $tmpfs/z
-	
-	# rebuild zro entries in fstab
-	for d in $add; do
-		echo "unionfs-fuse#$tmpfs/z$d=RW:$tmpfs/bind$d=RO	$d	unionmkdirrw	cow,allow_other,nonempty"
+if $stop; then
+	for d in $(show_zros); do
+		umount_zro $d 2>&1 || true
 	done
-	
-	echo "# $name entries end"
-} > $nfstab
+	is_mounted $tmpfs/t/b && umount $tmpfs/t/b || true
+	is_mounted $tmpfs/t/z && umount $tmpfs/t/z || true
+	rm -f $tmpfs/t/btrfs || true
+	rm_dir $tmpfs/t/b $tmpfs/t/z $tmpfs/t $tmpfs
+fi
 
-update_fstab
+exit $ret
