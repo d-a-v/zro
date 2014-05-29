@@ -1,17 +1,12 @@
-zro
-====
+	This is designed to allow running a read-only root
+	filesystem while keeping some r/w locations (/tmp,
+	var/log, ...).  It might be useful on embedded systems. 
+	Compared to tmpfs, ram data are compressed, and an
+	effort is done to allow synchronisation of the ram data
+	onto the real filesystem.  This is not automatic
+	though, processes keeping opened files needs to be
+	cleanly stopped for syncronisation and restarted after.
+	
+	This is combining unionfs-fuse, btrfs and tmpfs.
 
-Set root fs in read-only (-O) mode and keep selected
-directories in read-write (-a) mode in a compressed ram
-fs.
-
-Those directories can be on-demand-synchronized (-S,
--A) to the real fs.
-
-While in r/w mode, the 'show-access-w' command
-helps choosing which directories should be kept r/w.
-
-This is so far designed on and for raspbian.
-
-raspbian repository available at
-	http://debian.unixrox.net:81/debian
+	This is so far designed on and for debian derivatives.

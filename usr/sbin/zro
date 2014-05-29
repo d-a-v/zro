@@ -23,21 +23,27 @@ help ()
 
 Options:
 `grep -- '^[^#]*-[^ ]*).*#' $0 | sed -e 's,),,1' -e 's,\\\\,,1' -e 's,#,,1' -e 's,\t\t*,\t,g'`
+
 default tmpfs location is $tmpfs (if not specified as first arg in mount entry)
 
-Purpose:
-	Set root fs in read-only (-O) mode and keep selected
-	directories in read-write (-a) mode in a compressed ram
-	fs (combining tmpfs, btrfs and unionfs-fuse).
+EOF
+}
+
+md ()
+{
+cat << EOF
+	This is designed to allow running a read-only root
+	filesystem while keeping some r/w locations (/tmp,
+	var/log, ...).  It might be useful on embedded systems. 
+	Compared to tmpfs, ram data are compressed, and an
+	effort is done to allow synchronisation of the ram data
+	onto the real filesystem.  This is not automatic
+	though, processes keeping opened files needs to be
+	cleanly stopped for syncronisation and restarted after.
 	
-	Those ram directories can be on-demand flushed (-S,
-	-A and umount) to the real fs.
-	
-	While in r/w mode, the '--access-w' option
-	helps choosing which directories should be kept r/w.
+	This is combining unionfs-fuse, btrfs and tmpfs.
 
 	This is so far designed on and for debian derivatives.
-
 EOF
 }
 
@@ -45,17 +51,18 @@ desc ()
 {
 cat << EOF
 zro multicommand script:
-	zro <options>		manage fstab, see Options below
 	ro [<dir>]		remount <dir> (default /) as read-only
 	rw [<dir>]		remount <dir> (default /) as read-write
 	apt-get/aptitude [...]	if needed, remount r/w before and r/o after executing the real command
 	umount.fuse.zro		called by umount: sync modified files then revert to original directory
 	mount.zro		called by mount, mount options:
-	.	.	.	size=<tmpfs-size> default:$tmpfsize (see size option from tmpfs)
-	.	.	.	fill=<fill[%]> default:$fill - filesystem size(%) created in the tmpfs
+	.	.	.	size=<tmpfs-size> - default:$tmpfsize (see tmpfs man page)
+	.	.	.	fill=<fill[%]> - default:$fill - filesystem size(%) created in the tmpfs
 	.	.	.	umask=<umask> - default:022 (use 000 for '/tmp'-like directories)
+	zro <options>		manage fstab, see Options below
 
 EOF
+	md
 	help
 }
 
@@ -320,7 +327,7 @@ rm_dir ()
 	done
 }
 
-version=20140519.0109
+version=20140529.0109
 verbose=false
 
 set -e # globally rely on this
@@ -353,20 +360,20 @@ ret=0
 while ! test -z "$1"; do
 	case $1 in
 
-		-a|--add)			# <dir> - add dir as zro in fstab
+		-a|--add)			# <mountpoint> - add dir as zro mountpoint in fstab
 			add="$add $2"
 			shift;;
 
-		-r|--remove)			# <dir(regexp)> - remove zro dirs from fstab (.* = all)
+		-r|--remove)			# <mountpoint(regexp)> - remove zro mountpoints from fstab (.* = all)
 			remove="$remove|$2"
 			shift;;
 			
-		-S|--sync)			# <dir> - rsync files to real fs (and flush tmpfs)
+		-S|--sync)			# <mountpoint> - sync mountpoint to real fs (flushes ram)
 			test -z "$2" && { help; exit 1; }
 			sync "$2"
 			shift;;
 		
-		-A|--syncall)			# - sync all files in ram to real fs
+		-A|--syncall)			# - sync all zro mountpoints
 			syncall=:;;
 		
 		-W|--rw) 			# - set / as rw in fstab
@@ -375,7 +382,7 @@ while ! test -z "$1"; do
 		-O|--ro) 			# - set / as ro in fstab
 			rorw_slash ro;;
 		
-		-X|--stop)			# - stop and umount everything
+		-X|--stop)			# - sync all and umount everything
 			stop=:;;
 		
 		--access-w)			# [<dir>] - show files opened in write or append mode
@@ -383,7 +390,7 @@ while ! test -z "$1"; do
 			shift;;
 		
 		-h|--help)			# - help and wrappers description
-			desc;
+			desc
 			exit 0;;
 		
 		-v|--verbose)
@@ -394,8 +401,8 @@ while ! test -z "$1"; do
 			exit 0;;
 		
 		#debug
+		-md) md; exit 0;;
 		-man) help2man -s 8 -N $0 | man -l -; exit 0;;
-		-fstab) fstab="$2"; shift; getcurrententries;;
 		
 		*)
 			echo "unrecognized option '$1'"
