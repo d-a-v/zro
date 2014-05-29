@@ -236,7 +236,7 @@ mount_zro ()
 	dest=$2		# ex: "/var/log"
 	opts=,$4,	# ex: ",fill=80%,size=20%,"
 
-	test -z "$zro" -o -z "$dest" && { echo "syntax: $0 <some-empty-or-to-be-created-dir> <existing-dir-to-cache> [rw|,size=<tmpfssize>|,fill=<%>]" 1>&2; exit 1; }
+	test -z "$zro" -o -z "$dest" && { echo "syntax: $0 <some-empty-or-to-be-created-dir> <existing-dir-to-cache> <mount-options>" 1>&2; exit 1; }
 
 	# if first char of $zro is not /, then set $zro to default
 	test ${zro%${zro#?*}} = / || zro=$tmpfs
