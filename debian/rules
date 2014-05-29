@@ -10,8 +10,9 @@
 export DH_VERBOSE=1
 
 override_dh_auto_build:
+	usr/sbin/zro -md > README.md
 	help2man -s 8 -N -o debian/zro.8 usr/sbin/zro
-	for i in ro rw show-access-w mount.ztmpfs mount.unionmkdirrw; do \
+	for i in ro rw mount.zro umount.fuse.zro; do \
 		cp debian/zro.8 debian/$$i.8; \
 	done
 	dh_auto_build

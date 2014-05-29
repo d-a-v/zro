@@ -1,4 +1,8 @@
-commit 670c9ea6cdde3e932bf81f64e033141a47a48ea2
+zro (20140529.0109-1) wheezy; urgency=low
+
+  * more simple use (one line in fstab for everything)
+
+ -- David Gauchard <david@unixrox.net>  Fri, 29 May 2014 12:00:00 +0200
 
 zro (20140509.0100-1) wheezy; urgency=low
 

@@ -4,7 +4,7 @@ usr/sbin/rw
 usr/sbin/apt-get
 usr/sbin/aptitude
 sbin/mount.zro
-sbin/mount.fuse.zro
+sbin/umount.fuse.zro
 debian/zro.8 /usr/share/man/man8
 debian/ro.8 /usr/share/man/man8
 debian/rw.8 /usr/share/man/man8
