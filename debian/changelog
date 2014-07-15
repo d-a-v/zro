@@ -1,3 +1,9 @@
+zro (20140715.0110-1) wheezy; urgency=low
+
+  * bug fix on fill variable interpreatin
+
+ -- David Gauchard <david@unixrox.net>  Fri, 15 July 2014 15:00:00 +0200
+
 zro (20140529.0109-1) wheezy; urgency=low
 
   * more simple use (one line in fstab for everything)

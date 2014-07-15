@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/sh -x
 
 # License: GPLv2 (see COPYING) or any later version
 # Authors: david gauchard <david@unixrox.net>
@@ -253,7 +253,7 @@ mount_zro ()
 	for o in `echo $opts | tr , ' '`; do
 		case "$o" in
 		size=*)	tmpfsize=${o#size=};;
-		fill=*) fill=${o#fill=}; fill=${fill%\%};;
+		fill=*) fill=${o#fill=};;
 		umask=*) umask=${o#umask=};;
 		v|verb*) verbose=:;;
 		noauto|rw) ;;
@@ -264,6 +264,7 @@ mount_zro ()
 	done
 	$bad && exit 1
 	tmpfsopts="size=$tmpfsize"
+	fill=${fill%\%}
 
 	mkdir -p $zro/t
 	if [ $(fstype $zro/t) != tmpfs ]; then
