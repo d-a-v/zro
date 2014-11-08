@@ -15,7 +15,6 @@ nfstab=/tmp/fstab.new
 # --stop too verbose in case of problem
 # what to do on busy umount: sync or not ?
 # test change [(space)(tab)] with [[:space:]] or [[:blank:]] in greps
-# check show_access_w and try to perlize / awkize it
 
 help ()
 {
@@ -94,14 +93,7 @@ fstype ()
 
 show_access_w ()
 {
-	# is it portable?
-	# does -Fctanp give always same order
-	# who wants to play with perl instead ?
-	#linux ok, not osx:
-	#lsof -nP -f -Fctanp0 | tr '\0' ' '|egrep '^(p|a[wu] tREG)' |sed -e 's,a. tREG n,,g' -e 's, c\(.\),-\1,g' | tr '\n' ' ' | sed 's,p\([1-9][0-9]*-[^ ]*\),\n\1,g'|grep  '  .'|sort -u
-	# linux, osx ok:
-	lsof -nP -f -Fctanp0 | tr '\0' ' '|egrep '^(p|a[wu] tREG)' |sed -e 's,a. tREG n,,g' -e 's, c\(.\),-\1,g' | tr '\n' '#' | sed 's,#p\([1-9][0-9]*-[^#]*\),\
-\1,g'|grep  ' #'|sed 's,#,,g'|sort -u | grep " $1"
+	lsof -nP | grep '[uw][uw ]*REG' | cut -d/ -f2-3 | sort -u
 }
 
 ro ()
@@ -330,7 +322,7 @@ rm_dir ()
 	done
 }
 
-version=20140529.0109
+version=20141108.2241
 verbose=false
 
 set -e # globally rely on this
