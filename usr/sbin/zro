@@ -148,12 +148,12 @@ sync ()
 
 		if ! $mounted || umount -i "$1" 2>&1; then
 			echo "$name: syncing '$1'" 1>&2
-			if ! rsync -a --remove-source-files "$zro/t/z$1/" "$zro/t/b$1"; then
+			if ! rsync -a --remove-source-files "$zro/btrfsmount$1/" "$zro/bindroot$1"; then
 				echo 'is / rw-mounted ?' 1>&2
 				ret=1
 			fi
-			if ! is_empty "$zro/t/z$1/"; then
-				echo "could not synchronize '$zro/t/z$1/' to '$zro/t/b$1'" 1>&2
+			if ! is_empty "$zro/btrfsmount$1/"; then
+				echo "could not synchronize '$zro/btrfsmount$1/' to '$zro/bindroot$1'" 1>&2
 				ret=1
 			fi
 			$mounted && mount "$1" || true
@@ -260,29 +260,30 @@ mount_zro ()
 	tmpfsopts="size=$tmpfsize"
 	fill=${fill%\%}
 
-	mkdir -p $zro/t
-	if [ $(fstype $zro/t) != tmpfs ]; then
-		# create tmpfs in $zro/t
-		mount -t tmpfs -o $tmpfsopts none "$zro/t"
+	mkdir -p $zro
+	if [ $(fstype $zro) != tmpfs ]; then
+		# create tmpfs in $zro
+		mount -t tmpfs -o $tmpfsopts none "$zro"
 	fi
 	
-	mkdir -p $zro/t/z
-	if [ $(fstype $zro/t/z) != btrfs ]; then
-		# create a btrfs fs for $zro/t/z
-		btrfs=$zro/t/btrfs	# btrfs file
-		availtmpfsk=$(($(df -P -k $zro/t | tail -1 | awk '{print $4;}') * $fill / 100))
-		dd if=/dev/zero of="$btrfs" bs=1024 count=$availtmpfsk 2>&1 | log1
+	mkdir -p $zro/btrfsmount
+	if [ $(fstype $zro/btrfsmount) != btrfs ]; then
+		# create a btrfs fs for $zro/btrfsmount
+		btrfs=$zro/btrfsimg	# btrfs file
+		availtmpfsk=$(($(df -P -k $zro | tail -1 | awk '{print $4;}') * $fill / 100))
+		truncate --size ${availtmpfsk}k "$btrfs" | log1
 		mkfs.btrfs "$btrfs" | log1
-		mount -o loop,compress-force=zlib,nobarrier,nodatacow,nodatasum,notreelog,ssd -t btrfs "$btrfs" "$zro/t/z"
+		mount -o loop,compress-force=zlib,nobarrier,nodatacow,nodatasum,notreelog -t btrfs "$btrfs" "$zro/btrfsmount"
+		mount -o remount "$zro/btrfsmount" -o compress-force=zlib
 	fi
 	
-	mkdir -p $zro/t/z/$dest
-	if [ ! -r $zro/t/b/$dest ]; then
-		mkdir -p $zro/t/b
-		mount -t none -o bind / $zro/t/b
+	mkdir -p $zro/btrfsmount/$dest
+	if [ ! -r $zro/bindroot/$dest ]; then
+		mkdir -p $zro/bindroot
+		mount -t none -o bind / $zro/bindroot
 	fi
 	
-	unionfs-fuse -o cow,allow_other,nonempty,statfs_omit_ro,fsname=$name,subtype=$name,umask=$umask $zro/t/b/$dest=RO:$zro/t/z/$dest=RW $dest
+echo	@@@unionfs-fuse -o cow,statfs_omit_ro,allow_other,nonempty,fsname=$name,subtype=$name,umask=$umask $zro/btrfsmount/$dest=RW:$zro/bindroot/$dest=RO $dest
 }
 
 umount_zro ()
