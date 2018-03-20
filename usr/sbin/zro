@@ -145,7 +145,7 @@ sync ()
 	else
 		# if first char of $zro is not /, then set $zro to default
 		test ${zro%${zro#?*}} = / || zro=$tmpfs
-
+exit 1
 		if ! $mounted || umount -i "$1" 2>&1; then
 			echo "$name: syncing '$1'" 1>&2
 			if ! rsync -a --remove-source-files "$zro/btrfsmount$1/" "$zro/bindroot$1"; then
@@ -236,7 +236,7 @@ mount_zro ()
 	test ${zro%${zro#?*}} = / || zro=$tmpfs
 
 	# create dir in (if not present, create btrfs on (if not present, create tmpfs on $zro/z)
-	# create dir and bind mount dest on $zro/bind
+	# rename original directory to .rw
 	# union FS both on $dest
 
 	[ $(fstype $dest) = fuseblk ] && { echo "$0: $dest already $name-mounted?" 1>&2; exit 1; }
@@ -277,13 +277,17 @@ mount_zro ()
 		mount -o remount "$zro/btrfsmount" -o compress-force=zlib
 	fi
 	
-	mkdir -p $zro/btrfsmount/$dest
-	if [ ! -r $zro/bindroot/$dest ]; then
-		mkdir -p $zro/bindroot
-		mount -t none -o bind / $zro/bindroot
+	if [ ! -d "${dest}.rw" ]; then
+		mv "${dest}" "${dest}".rw
+		mkdir "${dest}"
 	fi
-	
-echo	@@@unionfs-fuse -o cow,statfs_omit_ro,allow_other,nonempty,fsname=$name,subtype=$name,umask=$umask $zro/btrfsmount/$dest=RW:$zro/bindroot/$dest=RO $dest
+	if ! is_empty ${dest}; then
+		echo "$0: ${dest}.rw exists but ${dest} is not empty" 1>&2
+		exit 1
+	fi
+
+	mkdir -p $zro/btrfsmount/$dest
+	echo unionfs-fuse -o cow,statfs_omit_ro,allow_other,nonempty,fsname=$name,subtype=$name,umask=$umask $zro/btrfsmount/$dest=RW:${dest}.rw=RO $dest
 }
 
 umount_zro ()
